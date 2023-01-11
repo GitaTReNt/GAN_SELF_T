@@ -1,82 +1,95 @@
-import tensorflow as tf
-import keras
 from Generator import generator_model
 from discriminator import discriminator_model
-import matplotlib.pyplot as plt
-#import一系列的包
-(x_train,y_train),_=keras.datasets.mnist.load_data()
-x_train=tf.expand_dims(x_train,axis=-1)#这里由于输入的手写体是只有两个维度的，所以这里我扩展最后一个维度
-x_train = tf.reshape(x_train,[60000, 28, 28, 1])#shape一下，以便输入到
+import time
+import numpy as np
+from data_process import images
+import os
+from matplotlib import pyplot as plt
+from keras import Input
+from keras.models import Model
+from config import LATENT_DIM,CHANNELS,WIDTH,HEIGHT
+from keras.optimizers import RMSprop
+from PIL import Image
+import imageio
+import shutil
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1" #删掉这一行即可改为gpu训练，batch_size = 16 的情况下建议显存最小12G
+generator = generator_model()
+discriminator = discriminator_model()
+discriminator.trainable = False
+gan_input = Input(shape=(LATENT_DIM, ))
+gan_output = discriminator(generator(gan_input))
+gan = Model(gan_input, gan_output)
+#Adversarial Model
+optimizer = RMSprop(lr=.0001, clipvalue=1.0, decay=1e-8)
+gan.compile(optimizer=optimizer, loss='binary_crossentropy')
 
-x_train=tf.cast(x_train,tf.float32)#把tensor数据类型变成指定类型
-x_train=x_train/255.0#相当于
-x_train=x_train*2-1#将图片数据规范到[-1,1]
-BATCH_SIZE=256
-BUFFER_SIZE=60000#每次训练弄乱的大小
-dataset=tf.data.Dataset.from_tensor_slices(x_train)
-dataset=dataset.shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
+iters = 10#训练回合
+batch_size = 16
+RES_DIR = 'res2'
+FILE_PATH = '%s/generated_%d.png'
+if not os.path.isdir(RES_DIR):
+    os.mkdir(RES_DIR)
+CONTROL_SIZE_SQRT = 6
+control_vectors = np.random.normal(size=(CONTROL_SIZE_SQRT ** 2, LATENT_DIM)) / 2
+start = 0
+d_losses = []
+a_losses = []
+images_saved = 0
+for step in range(iters):
+    start_time = time.time()
+    latent_vectors = np.random.normal(size=(batch_size, LATENT_DIM))
+    generated = generator.predict(latent_vectors)
 
-loss_object=keras.losses.BinaryCrossentropy(from_logits=True)#损失这里使用二分类交叉熵损失，没有激活是logits
-def discriminator_loss(real_out,fake_out):
-    real_loss=loss_object(tf.ones_like(real_out),  real_out)
-    fake_loss=loss_object(tf.zeros_like(fake_out),fake_out)
-    return real_loss+fake_loss
-#这里判别器使用的损失是计算我们人为制造的0,1标签与判别器模型输出的做计算，最终返回二者相加
-def generator_loss(fake_out):
-    fake_loss=loss_object(tf.ones_like(fake_out),fake_out)
-    return fake_loss
-#生成器计算损失当然是希望判别器都把他当真，所以是与1做计算
+    real = images[start:start + batch_size]
+    combined_images = np.concatenate([generated, real])
 
-generator_opt=keras.optimizers.Adam(1e-4)
-discriminator_opt=keras.optimizers.Adam(1e-4)#定义两个模型的优化器
+    labels = np.concatenate([np.ones((batch_size, 1)), np.zeros((batch_size, 1))])
+    labels += .05 * np.random.random(labels.shape)
 
-EPOCHS = 100
-noise_dim = 100  # 输入噪声的维度
-num = 16  # 每次随机绘画16张图
-seed = tf.random.normal(shape=([num, noise_dim]))  # 制作用于生成图片的向量
-gen_model = generator_model()
-dis_model = discriminator_model()
+    d_loss = discriminator.train_on_batch(combined_images, labels)
+    d_losses.append(d_loss)
 
+    latent_vectors = np.random.normal(size=(batch_size, LATENT_DIM))
+    misleading_targets = np.zeros((batch_size, 1))
 
-# 初始化这两个模型
-# 定义训练步骤
-@tf.function
-def train_step(images):
-    noise = tf.random.normal([BATCH_SIZE, noise_dim])
-    with tf.GradientTape() as gentape, tf.GradientTape() as disctape:
-        real_output = dis_model(images, training=True)
-        fake_image = gen_model(noise, training=True)
-        fake_output = dis_model(fake_image, training=True)
-        gen_loss = generator_loss(fake_output)
-        dis_loss = discriminator_loss(real_output, fake_output)
-    grad_gen = gentape.gradient(gen_loss, gen_model.trainable_variables)
-    grad_dis = disctape.gradient(dis_loss, dis_model.trainable_variables)
-    generator_opt.apply_gradients(zip(grad_gen, gen_model.trainable_variables))
-    discriminator_opt.apply_gradients(zip(grad_dis, dis_model.trainable_variables))
+    a_loss = gan.train_on_batch(latent_vectors, misleading_targets)
+    a_losses.append(a_loss)
 
+    start += batch_size
+    if start > images.shape[0] - batch_size:
+        start = 0
 
-# 在每次训练后绘图
-def generate_plot_img(gen_model, test_noise):
-    pre_img = gen_model(test_noise, training=False)
-    fig = plt.figure(figsize=(4, 4))
-    for i in range(pre_img.shape[0]):
-        plt.subplot(4, 4, i + 1)
-        plt.imshow((pre_img[i, :, :, 0] + 1) / 2, cmap='gray')
-        # 这里cmap限定绘图的颜色空间，灰度图
-        plt.axis('off')
-    plt.show()  # 将16张图片一起显示出来
+    if step % 50 == 49:
+        gan.save_weights('gan.h5')
 
+        print('%d/%d: d_loss: %.4f,  a_loss: %.4f.  (%.1f sec)' % (
+        step + 1, iters, d_loss, a_loss, time.time() - start_time))
 
+        control_image = np.zeros((WIDTH * CONTROL_SIZE_SQRT, HEIGHT * CONTROL_SIZE_SQRT, CHANNELS))
+        control_generated = generator.predict(control_vectors)
+        for i in range(CONTROL_SIZE_SQRT ** 2):
+            x_off = i % CONTROL_SIZE_SQRT
+            y_off = i // CONTROL_SIZE_SQRT
+            control_image[x_off * WIDTH:(x_off + 1) * WIDTH, y_off * HEIGHT:(y_off + 1) * HEIGHT,
+            :] = control_generated[i, :, :, :]
+        im = Image.fromarray(np.uint8(control_image * 255))
+        im.save(FILE_PATH % (RES_DIR, images_saved))
+        images_saved += 1
 
-def train(dataset, epochs):
-    for epoch in range(epochs):
-        for img in dataset:
-            train_step(img)
-            print('-',end='')
-        generate_plot_img(gen_model,seed)#绘制图片
+plt.figure(1, figsize=(12, 8))
+plt.subplot(121)
+plt.plot(d_losses)
+plt.xlabel('epochs')
+plt.ylabel('discriminant losses')
+plt.subplot(122)
+plt.plot(a_losses)
+plt.xlabel('epochs')
+plt.ylabel('adversary losses')
+plt.show()
 
-
-
-
-train(dataset,EPOCHS)#这里EPOCHS我设置为100
+images_to_gif = []
+for filename in os.listdir(RES_DIR):
+    images_to_gif.append(imageio.imread(RES_DIR + '/' + filename))
+imageio.mimsave('drive/trainnig_visual.gif', images_to_gif)
+shutil.rmtree(RES_DIR)

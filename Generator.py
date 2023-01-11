@@ -1,20 +1,38 @@
-import tensorflow as tf
-import keras
+from keras import Input
+from keras.models import Model
+from config import LATENT_DIM,CHANNELS
+from keras.layers import Dense, Reshape, LeakyReLU, Conv2D, Conv2DTranspose
 
-keras=tf.keras
-layers=keras.layers
 def generator_model():
-    model=keras.Sequential()#
-    model.add(layers.Dense(256,use_bias=False))#输入形状100是我输入噪声的形状,生成器一般都不使用BIAS input_shape=(100,),
-    model.add(layers.BatchNormalization())#全连接层--批标准化--激活
-    model.add(layers.LeakyReLU())#GAN中一般使用LeakyRelu函数来激活
-    model.add(layers.Dense(512,use_bias=False))#生成器一般都不使用BIAS
-    model.add(layers.BatchNormalization())
-    model.add(layers.LeakyReLU())#全连接层--批标准化--激活
-    model.add(layers.Dense(28*28*1,use_bias=False,activation='tanh'))#生成能够调整成我们想要的图片形状的向量 生成器最后没激活函数，生成的图片会有很明显的奇怪噪点。
-    model.add(layers.BatchNormalization())
-    model.add(layers.Reshape((28,28,1)))#这里进行修改向量的形状，可以直接使用layers的reshape
-    return model
+    gen_input = Input(shape = (LATENT_DIM,))
+
+    x = Dense(128 * 16 * 16)(gen_input)
+    x = LeakyReLU()(x)
+    x = Reshape((16, 16, 128))(x)
+
+    x = Conv2D(256, 5, padding='same')(x)#卷积
+    x = LeakyReLU()(x)
+
+    x = Conv2DTranspose(256, 4, strides=2, padding='same')(x)#反卷积操作
+    x = LeakyReLU()(x)
+
+    x = Conv2DTranspose(256, 4, strides=2, padding='same')(x)
+    x = LeakyReLU()(x)
+
+    x = Conv2DTranspose(256, 4, strides=2, padding='same')(x)
+    x = LeakyReLU()(x)
+
+    x = Conv2D(512, 5, padding='same')(x)
+    x = LeakyReLU()(x)
+
+    x = Conv2D(512, 5, padding='same')(x)
+    x = LeakyReLU()(x)
+
+    x = Conv2D(CHANNELS, 7, activation='tanh', padding='same')(x)#最后都用tanh激活，体现全局的特征
+
+    generator = Model(gen_input, x)
+
+    return generator
 #在多层CNN里，BN放在卷积层之后，激活和池化之前，以LeNet5为例：
 #由于经过Batch Norm处理时，通过训练β参数，进对线性变换的结果做了合适的平移，bias项可以忽略不用。
 #对卷积处理(cross-correlation)：zd,i,j=∑ch=0CH−1∑r=0R−1∑c=0C−1wd,ch,r,cxch,i+r,j+c+bd\displaystyle z_{d,i,j}=\sum \limits_{ch=0}^{CH-1}\sum\limits_{r=0}^{R-1}\sum\limits_{c=0}^{C-1}w_{d,ch,r,c}x_{ch,i+r,j+c}+b_d  \displaystyle z_{d,i,j}=\sum \limits_{ch=0}^{CH-1}\sum\limits_{r=0}^{R-1}\sum\limits_{c=0}^{C-1}w_{d,ch,r,c}x_{ch,i+r,j+c}+b_d
